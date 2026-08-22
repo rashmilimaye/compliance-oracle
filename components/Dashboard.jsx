@@ -42,7 +42,7 @@ function formatDate(iso) {
   return new Date(iso + "T00:00:00Z").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 function roleLabel(r) {
-  return { director: "Director", ca: "CA", isb_lead: "ISB Lead" }[r] || r;
+  return { director: "State Lead", ca: "CA", isb_lead: "ISB Lead" }[r] || r;
 }
 function festivalClash(company, iso, windows) {
   const tag = iso.slice(5);
