@@ -13,13 +13,18 @@ import {
   Info,
   ShieldAlert,
   LogOut,
+  Sparkles,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import HealthScoreGauge from "./HealthScoreGauge";
+import AuditTrailPanel from "./AuditTrailPanel";
+import DocumentManager from "./DocumentManager";
+import AIQueryPanel from "./AIQueryPanel";
+import CompanySearchBox from "./CompanySearchBox";
+import PortfolioCharts from "./PortfolioCharts";
 
 /* ---------------------------------------------------------------
-   Palette. Matches PC_Compliance_Oracle_Prototype.jsx exactly, so
-   the live site looks identical to the version everyone already
-   reviewed.
+   Palette. Unchanged from before.
 ------------------------------------------------------------------*/
 const C = {
   paper: "#F6F4EE", paperRaised: "#FFFFFF", ink: "#1E2321", inkSoft: "#5B6360",
@@ -56,16 +61,20 @@ function festivalClash(company, iso, windows) {
 }
 
 /* ---------------------------------------------------------------
-   Data loading. Everything here reads through Supabase's row-level
+   Data loading. Extended with company_health_score, which every
+   Phase 2 addition on this page (the company cards, the detail
+   panel, the portfolio chart) reads from the same fetch, so it is
+   never computed two different ways in two different places.
+   Everything here still reads through Supabase's row-level
    security: a state lead's session simply never receives another
-   state's rows, enforced by Postgres itself, not by this code
-   remembering to filter, so there is nothing to double check here.
+   state's rows, enforced by Postgres itself.
 ------------------------------------------------------------------*/
 function useOracleData() {
   const [companies, setCompanies] = useState([]);
   const [instances, setInstances] = useState([]);
   const [rules, setRules] = useState([]);
   const [festivals, setFestivals] = useState([]);
+  const [healthScores, setHealthScores] = useState([]);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -77,16 +86,17 @@ function useOracleData() {
     } = await supabase.auth.getUser();
     if (!user) return;
 
-    const [companiesRes, instancesRes, rulesRes, festivalsRes, profileRes] = await Promise.all([
+    const [companiesRes, instancesRes, rulesRes, festivalsRes, healthRes, profileRes] = await Promise.all([
       supabase.from("companies").select("*").order("name"),
       supabase.from("compliance_instances_live").select("*"),
       supabase.from("compliance_rules").select("*"),
       supabase.from("festival_windows").select("*").eq("active", true),
+      supabase.from("company_health_score").select("*"),
       supabase.from("profiles").select("*").eq("id", user.id).single(),
     ]);
 
     const firstError =
-      companiesRes.error || instancesRes.error || rulesRes.error || festivalsRes.error || profileRes.error;
+      companiesRes.error || instancesRes.error || rulesRes.error || festivalsRes.error || healthRes.error || profileRes.error;
     if (firstError) {
       setError(firstError.message);
       setLoading(false);
@@ -97,6 +107,7 @@ function useOracleData() {
     setInstances(instancesRes.data || []);
     setRules(rulesRes.data || []);
     setFestivals(festivalsRes.data || []);
+    setHealthScores(healthRes.data || []);
     setProfile(profileRes.data || null);
     setLoading(false);
   }, []);
@@ -110,11 +121,11 @@ function useOracleData() {
     reload();
   }, [reload]);
 
-  return { companies, instances, rules, festivals, profile, loading, error, reload };
+  return { companies, instances, rules, festivals, healthScores, profile, loading, error, reload };
 }
 
 /* ---------------------------------------------------------------
-   Small visual pieces (unchanged from the prototype).
+   Small visual pieces (unchanged from before).
 ------------------------------------------------------------------*/
 function RingBadge({ status, daysLeft }) {
   const size = 34, stroke = 3.5, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
@@ -228,15 +239,18 @@ function ComplianceRow({ row, onComplete, onUndo, onOpenCompany }) {
   );
 }
 
-function CompanyCard({ co, instances, onOpen }) {
+function CompanyCard({ co, instances, health, onOpen }) {
   const overdue = instances.filter((r) => r.status === "overdue").length;
   const dueSoon = instances.filter((r) => r.status === "dueSoon").length;
   const notIncorporated = !co.incorporation_date;
   return (
     <button onClick={onOpen} style={{ textAlign: "left", background: C.paperRaised, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-      <div>
-        <div style={{ fontWeight: 700, fontSize: 14, color: C.navy }}>{co.name}</div>
-        <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 2 }}>{co.cluster ? `${co.cluster}, ` : ""}{co.district}, {co.state}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: C.navy }}>{co.name}</div>
+          <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 2 }}>{co.cluster ? `${co.cluster}, ` : ""}{co.district}, {co.state}</div>
+        </div>
+        {health && !notIncorporated && <HealthScoreGauge score={health.health_score} overdueCount={health.overdue_count} size={40} showLabel={false} />}
       </div>
       <div style={{ fontSize: 11.5, color: C.inkSoft, display: "flex", flexDirection: "column", gap: 3 }}>
         <span>{notIncorporated ? "Not yet incorporated" : `Incorporated ${formatDate(co.incorporation_date)}`}{!notIncorporated && !co.incorporation_date_verified && <UnverifiedTag />}</span>
@@ -254,19 +268,24 @@ function DetailLine({ label, value }) {
   return <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><span style={{ color: C.inkSoft }}>{label}</span><span style={{ fontWeight: 600, textAlign: "right" }}>{value}</span></div>;
 }
 
-function CompanyDetail({ co, rows, onClose, onComplete, onUndo }) {
+function CompanyDetail({ co, rows, health, onClose, onComplete, onUndo }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "#00000055", display: "flex", justifyContent: "flex-end", zIndex: 20 }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 420, maxWidth: "90vw", background: C.paper, height: "100%", padding: "22px 22px", overflow: "auto", boxShadow: "-8px 0 24px #00000022" }} className="oracle-scroll">
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: "92vw", background: C.paper, height: "100%", padding: "22px 22px", overflow: "auto", boxShadow: "-8px 0 24px #00000022" }} className="oracle-scroll">
         <button onClick={onClose} style={{ background: "none", border: "none", color: C.inkSoft, display: "flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 14 }}><ChevronRight size={14} /> Close</button>
         <h2 style={{ fontFamily: DISPLAY_FONT, fontSize: 20, color: C.navy, margin: "0 0 4px" }}>{co.name}</h2>
         <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 16 }}>{co.cluster ? `${co.cluster}, ` : ""}{co.district}, {co.state}</div>
 
-        <div style={{ background: C.paperRaised, border: `1px solid ${C.line}`, borderRadius: 9, padding: 14, fontSize: 12.5, marginBottom: 20, display: "flex", flexDirection: "column", gap: 6 }}>
-          <DetailLine label="Incorporated" value={co.incorporation_date ? formatDate(co.incorporation_date) : "Not yet"} />
-          {!co.incorporation_date_verified && co.incorporation_date && <div style={{ fontSize: 11.5, color: C.brick, display: "flex", alignItems: "center", gap: 4 }}><ShieldAlert size={12} /> date unverified, check against the certificate of incorporation</div>}
-          <DetailLine label="CIN" value={co.cin || "Pending"} />
-          <DetailLine label="Cluster" value={co.cluster || "\u2014"} />
+        <div style={{ background: C.paperRaised, border: `1px solid ${C.line}`, borderRadius: 9, padding: 14, fontSize: 12.5, marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+            <DetailLine label="Incorporated" value={co.incorporation_date ? formatDate(co.incorporation_date) : "Not yet"} />
+            {!co.incorporation_date_verified && co.incorporation_date && <div style={{ fontSize: 11.5, color: C.brick, display: "flex", alignItems: "center", gap: 4 }}><ShieldAlert size={12} /> date unverified, check against the certificate of incorporation</div>}
+            <DetailLine label="CIN" value={co.cin || "Pending"} />
+            <DetailLine label="Cluster" value={co.cluster || "\u2014"} />
+          </div>
+          {health && co.incorporation_date && (
+            <HealthScoreGauge score={health.health_score} overdueCount={health.overdue_count} size={68} showLabel={false} />
+          )}
         </div>
 
         {rows.length === 0 ? (
@@ -296,6 +315,15 @@ function CompanyDetail({ co, rows, onClose, onComplete, onUndo }) {
             </div>
           </>
         )}
+
+        <div style={{ marginTop: 26, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
+          <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.5, color: C.inkSoft, fontWeight: 600, marginBottom: 10 }}>Documents</div>
+          <DocumentManager companyId={co.id} />
+        </div>
+
+        <div style={{ marginTop: 26, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
+          <AuditTrailPanel companyId={co.id} />
+        </div>
       </div>
     </div>
   );
@@ -315,7 +343,7 @@ function AddCompanyModal({ onClose, onAdd }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={label}>Company name<input style={field} value={form.name} onChange={set("name")} placeholder="Full registered name" /></label>
           <div style={{ display: "flex", gap: 10 }}>
-            <label style={{ ...label, flex: 1 }}>State<select style={field} value={form.state} onChange={set("state")}>{["Odisha", "Maharashtra", "Himachal Pradesh", "Jharkhand"].map((s) => <option key={s}>{s}</option>)}</select></label>
+            <label style={{ ...label, flex: 1 }}>State<select style={field} value={form.state} onChange={set("state")}>{["Odisha", "Maharashtra", "Himachal Pradesh", "Jharkhand", "Andhra Pradesh"].map((s) => <option key={s}>{s}</option>)}</select></label>
             <label style={{ ...label, flex: 1 }}>District<input style={field} value={form.district} onChange={set("district")} placeholder="District" /></label>
           </div>
           <label style={label}>CIN (leave blank if not yet incorporated)<input style={field} value={form.cin} onChange={set("cin")} placeholder="U02400OD2026PTC0XXXXX" /></label>
@@ -352,8 +380,8 @@ function AddCompanyModal({ onClose, onAdd }) {
    Main app
 ------------------------------------------------------------------*/
 export default function Dashboard() {
-  const { companies, instances, rules, festivals, profile, loading, error, reload } = useOracleData();
-  const [view, setView] = useState("overview");
+  const { companies, instances, rules, festivals, healthScores, profile, loading, error, reload } = useOracleData();
+  const [view, setView] = useState("overview"); // "overview" | "companies" | "lookup"
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("All states");
   const [statusFilter, setStatusFilter] = useState("Actionable");
@@ -362,6 +390,7 @@ export default function Dashboard() {
 
   const rulesByCode = useMemo(() => Object.fromEntries(rules.map((r) => [r.code, r])), [rules]);
   const companiesById = useMemo(() => Object.fromEntries(companies.map((c) => [c.id, c])), [companies]);
+  const healthByCompany = useMemo(() => Object.fromEntries(healthScores.map((h) => [h.company_id, h])), [healthScores]);
 
   const rows = useMemo(() => {
     return instances
@@ -448,6 +477,7 @@ export default function Dashboard() {
         <div style={{ fontSize: 11.5, color: "#B9C3D6", marginBottom: 26 }}>Producer Company compliance, live</div>
         <SideLink icon={<Calendar size={15} />} label="Portfolio overview" active={view === "overview"} onClick={() => setView("overview")} />
         <SideLink icon={<Building2 size={15} />} label={`Companies (${companies.length})`} active={view === "companies"} onClick={() => setView("companies")} />
+        <SideLink icon={<Sparkles size={15} />} label="Company lookup" active={view === "lookup"} onClick={() => setView("lookup")} />
         {(unverifiedCount > 0 || preIncorporationCount > 0) && (
           <div style={{ marginTop: 16, fontSize: 11.5, color: "#D8C89A", background: "#28406A", borderRadius: 7, padding: "9px 10px", lineHeight: 1.5 }}>
             {unverifiedCount > 0 && <div>{unverifiedCount} companies have an unverified incorporation date</div>}
@@ -483,6 +513,15 @@ export default function Dashboard() {
               <StatCard label="Completed this cycle" value={counts.completed} tone={C.forest} />
             </div>
 
+            <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div style={{ flex: "1 1 340px", background: C.paperRaised, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16 }}>
+                <PortfolioCharts companies={healthScores} />
+              </div>
+              <div style={{ flex: "1 1 340px" }}>
+                <AIQueryPanel />
+              </div>
+            </div>
+
             <FilterBar query={query} setQuery={setQuery} states={states} stateFilter={stateFilter} setStateFilter={setStateFilter}
               statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
 
@@ -494,7 +533,7 @@ export default function Dashboard() {
               ))}
             </div>
           </>
-        ) : (
+        ) : view === "companies" ? (
           <>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 18 }}>
               <div>
@@ -509,16 +548,24 @@ export default function Dashboard() {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
               {companies.map((co) => (
-                <CompanyCard key={co.id} co={co} instances={rows.filter((r) => r.company.id === co.id)} onOpen={() => setSelected(co.id)} />
+                <CompanyCard key={co.id} co={co} instances={rows.filter((r) => r.company.id === co.id)} health={healthByCompany[co.id]} onOpen={() => setSelected(co.id)} />
               ))}
             </div>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: 18 }}>
+              <h1 style={{ fontFamily: DISPLAY_FONT, fontSize: 26, margin: 0, color: C.navy }}>Look up a company</h1>
+              <div style={{ color: C.inkSoft, fontSize: 13, marginTop: 4 }}>Type a company's name, or part of it, for an AI written brief on its status, health score, and recent activity.</div>
+            </div>
+            <CompanySearchBox />
           </>
         )}
       </div>
 
       {selectedCompany && (
         <CompanyDetail co={selectedCompany} rows={rows.filter((r) => r.company.id === selectedCompany.id)}
-          onClose={() => setSelected(null)} onComplete={markComplete} onUndo={undoComplete} />
+          health={healthByCompany[selectedCompany.id]} onClose={() => setSelected(null)} onComplete={markComplete} onUndo={undoComplete} />
       )}
       {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdd={addCompany} />}
     </div>
